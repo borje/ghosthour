@@ -1,0 +1,18 @@
+# local toolchain (emulator, C64 ROMs, venv): recreate with ./setup.sh
+.tools/
+
+# build output
+build/
+
+# private reference material, never published
+initial_art/
+
+# Python
+__pycache__/
+*.pyc
+
+# editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
