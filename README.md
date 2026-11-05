@@ -8,6 +8,8 @@ The great clock stopped one minute before midnight, so the hour of the ghosts ne
 a telegram runner in a yellow slicker, caught in the storm. Find the four lost clock parts and bring
 them to the clock in the Great Hall.
 
+**[▶ Play in your browser](https://vc64web.github.io/#openROMS=true#https://raw.githubusercontent.com/brunokeymolen/ghosthour/main/play/ghosthour.prg)**: runs in the vc64web emulator, with no install. Press SPACE to start.
+
 | Begin screen | Outside | Brooke |
 |:---:|:---:|:---:|
 | ![Title screen with a moonlit manor and sheet ghosts](docs/screenshots/title.png) | ![The rainy graveyard at night](docs/screenshots/outside.png) | ![Candlelight in the dark Bedroom, beside Brooke](docs/screenshots/brooke.png) |
