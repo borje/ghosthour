@@ -4,6 +4,9 @@
 # build output
 build/
 
+# demo videos (make your own with tools/record_demo.py)
+demo/
+
 # private reference material, never published
 initial_art/
 
