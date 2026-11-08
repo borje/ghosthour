@@ -74,6 +74,10 @@ whose state changed are redrawn, one row span at a time, so a step costs very li
 Lightning is a single write to the background colour. Sprites use two layers, a hi-res ink outline
 over a multicolour fill, to get the look of inked comic art.
 
+## NES port
+
+A port to the NES is in progress in [`nes/`](nes/README.md). It shares the art in `tools/`.
+
 ## Authors
 
 - **Claude** (Anthropic)
