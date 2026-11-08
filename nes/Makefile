@@ -3,7 +3,8 @@ SHELL   := /bin/bash
 TOOLS   := source .tools/env.sh &&
 PY_SRC  := $(wildcard tools/*.py) $(wildcard ../tools/*.py)
 ROM     := build/ghosthour.nes
-GEN     := build/chr_in.bin build/chr_out.bin build/chr_spr.bin build/gen_const.inc build/gen_data.inc
+GEN     := build/chr_in.bin build/chr_out.bin build/chr_spr.bin build/gen_const.inc build/gen_data.inc \
+           build/gen_bank0.inc build/gen_bank1.inc build/title_chr0.bin build/title_chr1.bin build/title.nam
 
 all: $(ROM)
 

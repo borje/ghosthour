@@ -76,7 +76,8 @@ over a multicolour fill, to get the look of inked comic art.
 
 ## NES port
 
-A port to the NES is in progress in [`nes/`](nes/README.md). It shares the art in `tools/`.
+The whole game is also ported to the NES, in [`nes/`](nes/README.md). It shares the art in `tools/`.
+The ROM is [`play/ghosthour.nes`](play/ghosthour.nes): it runs in any NES emulator.
 
 ## Authors
 

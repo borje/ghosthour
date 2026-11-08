@@ -1,5 +1,5 @@
-; Ghost Hour - NES port, milestone 4: the whole game with music and sound, no title screen yet: 13 rooms,
-; candle lighting, ghosts, bats, wolves, candles, clock parts, Brooke and the clock.
+; Ghost Hour - NES port. The title, the story, 13 rooms with candle lighting, ghosts, bats,
+; werewolves, candles, clock parts, Brooke, the clock, music and sound, and the end screens.
 ; The game logic is a port of the C64 version (../src/main.asm), with speeds and timers
 ; rescaled from 50 Hz (PAL C64) to 60 Hz (NTSC NES).
 ;
@@ -60,7 +60,7 @@ E_BROOKE  = 3
 
 .segment "HEADER"
     .byte "NES", $1A
-    .byte 2                 ; 2 x 16 KB PRG
+    .byte 4                 ; 4 x 16 KB PRG
     .byte 0                 ; CHR-RAM
     .byte $21               ; mapper 2, vertical mirroring
     .byte $00
@@ -70,6 +70,7 @@ E_BROOKE  = 3
 dbg_room:  .res 1           ; test hook: tools/play.py writes room+1 here to jump to a room
 nmi_count: .res 1
 nmi_skip:  .res 1           ; set while the main code writes the PPU directly
+ctrl_shadow: .res 1         ; PPUCTRL, written every vblank
 mask_shadow: .res 1
 bgcol:     .res 1           ; backdrop colour, written every vblank (lightning)
 vb_ready:  .res 1
@@ -175,13 +176,22 @@ ITEM_GONE: .res NUM_ROOMS
 chr_in:    .incbin "chr_in.bin"
 chr_out:   .incbin "chr_out.bin"
 chr_spr:   .incbin "chr_spr.bin"
+.include "gen_bank0.inc"
+
+.segment "BANK1"
+title_chr: .incbin "title_chr0.bin"   ; both pattern tables: the top and the bottom of the picture
+           .incbin "title_chr1.bin"
+title_nam: .incbin "title.nam"
+.include "gen_bank1.inc"
 
 ; ---------------------------------------------------------------------------
 .segment "RODATA"
 .include "gen_data.inc"
 
 ; UNROM has bus conflicts: the bank number is written over a ROM byte holding the same value
-bank_table: .byte 0, 1
+bank_table: .byte 0, 1, 2, 3
+; title lightning, played from the end (C64: light blue twice, sky, white, light blue)
+title_flash: .byte TITLE_SKY, $21, $30, TITLE_SKY, $21, $21
 
 ; where each of the 9 hero tiles goes, relative to the sprite's top left
 part_dx:   .byte 0, 8, 16, 0, 8, 16, 0, 8, 16
@@ -245,12 +255,28 @@ row_lblo:  .repeat ROOM_ROWS, r
 :   bit PPUSTATUS           ; second vblank: the PPU is ready
     bpl :-
 
-    lda #0                  ; select bank 0 at $8000
-    tax
-    sta bank_table,x
+    lda #0                  ; bank 0 at $8000
+    jsr set_bank
+    jsr sound_init
+    lda #$0F
+    sta bgcol
+    lda #$A7
+    sta rng
+    lda #1
+    sta nmi_skip            ; the screen is off: the NMI only counts and plays the sound
+    lda #CTRL
+    sta ctrl_shadow
+    sta PPUCTRL
+    jsr title_screen
+    lda #<page_story
+    ldx #>page_story
+    jsr text_screen
+    ; fall through
+.endproc
 
-    ; sprite tiles into CHR-RAM at $1000
-    lda #$10
+.proc new_game
+    jsr screen_off
+    lda #$10                ; sprite tiles into CHR-RAM at $1000 (the title used them)
     sta PPUADDR
     lda #0
     sta PPUADDR
@@ -260,14 +286,6 @@ row_lblo:  .repeat ROOM_ROWS, r
     sta ptr+1
     ldx #16
     jsr copy_pages
-
-    jsr sound_init
-    lda #$FF
-    sta set_loaded
-    lda #$A7
-    sta rng
-    lda #$0F
-    sta bgcol
     lda #WAX_FULL
     sta wax
     lda #NERVE_FULL
@@ -284,6 +302,8 @@ row_lblo:  .repeat ROOM_ROWS, r
     sta px+1
     lda #START_Y
     sta py
+    lda #CTRL
+    sta ctrl_shadow
     jsr enter_room
     lda #SONG_GAME
     jsr music_start
@@ -292,9 +312,6 @@ row_lblo:  .repeat ROOM_ROWS, r
     jsr show_message
     jsr player_anim
     jsr draw_sprites
-
-    lda #CTRL
-    sta PPUCTRL
     ; fall through
 .endproc
 
@@ -328,7 +345,7 @@ row_lblo:  .repeat ROOM_ROWS, r
     jmp main_loop
 .endproc
 
-; The clock strikes twelve (game_over 1), or you faint (2). Then START plays again.
+; The clock strikes twelve (game_over 1), or you faint (2); then the end screen, and the title.
 .proc ending
     cmp #1
     beq win
@@ -343,9 +360,10 @@ row_lblo:  .repeat ROOM_ROWS, r
     sta bgcol
     lda #58
     jsr idle_frames
-    lda #<msg_faint
-    ldx #>msg_faint
-    jmp wait_start
+    lda #<page_lose
+    ldx #>page_lose
+    jsr text_screen
+    jmp reset
 win:
     ; every light in the room comes on, and the bell tolls twelve times
     jsr music_stop
@@ -380,19 +398,11 @@ bell:
     jsr idle_frames
     dec count
     bne bell
-    lda #<msg_welldone
-    ldx #>msg_welldone
-wait_start:
-    jsr show_message
-    lda #MSG_FOREVER
-    sta msg_timer
-:   lda #1
-    jsr idle_frames
-    lda joy_prev
-    eor #$FF
-    and joy
-    and #J_START
-    beq :-
+    lda #SONG_TITLE
+    jsr music_start
+    lda #<page_win
+    ldx #>page_win
+    jsr text_screen
     jmp reset
 .endproc
 
@@ -477,7 +487,7 @@ novb:
     lda #0
     sta PPUSCROLL
     sta PPUSCROLL
-    lda #CTRL
+    lda ctrl_shadow
     sta PPUCTRL
     lda mask_shadow
     sta PPUMASK
@@ -501,6 +511,264 @@ done:
 :   cmp nmi_count
     beq :-
     rts
+.endproc
+
+; ---- screens -----------------------------------------------------------------
+; A = bank at $8000. Keeps A.
+.proc set_bank
+    tax
+    sta bank_table,x
+    rts
+.endproc
+
+; screen off now; the NMI leaves the PPU alone until screen_on
+.proc screen_off
+    lda #1
+    sta nmi_skip
+    lda #0
+    sta PPUMASK
+    sta mask_shadow
+    rts
+.endproc
+
+; the next NMI turns the screen on
+.proc screen_on
+    lda #MASK_ON
+    sta mask_shadow
+    lda #0
+    sta vb_ready
+    sta nmi_skip
+    rts
+.endproc
+
+; A = tile set (0 indoor, 1 outdoor) into the background half of CHR-RAM, unless it is there
+; already. Screen off, bank 0.
+.proc load_tiles
+    cmp set_loaded
+    beq out
+    sta set_loaded
+    tay
+    lda #0
+    sta rain_step
+    sta PPUADDR
+    sta PPUADDR
+    lda #<chr_in
+    ldx #>chr_in
+    cpy #0
+    beq :+
+    lda #<chr_out
+    ldx #>chr_out
+:   sta ptr
+    stx ptr+1
+    ldx #16
+    jsr copy_pages
+out:
+    rts
+.endproc
+
+; only sprite 0, for the title's split
+.proc clear_oam
+    ldx #0
+    lda #$FF
+:   sta OAM,x
+    inx
+    bne :-
+    rts
+.endproc
+
+; The title: the picture uses both pattern tables. Sprite 0 sits behind the picture just
+; above the split; when the PPU draws it, the rest of the screen switches to the tiles at $1000.
+.proc title_screen
+    jsr screen_off
+    lda #1
+    jsr set_bank
+    lda #0
+    sta PPUADDR
+    sta PPUADDR
+    lda #<title_chr
+    sta ptr
+    lda #>title_chr
+    sta ptr+1
+    ldx #32                 ; 8 KB: both tables
+    jsr copy_pages
+    lda #$20
+    sta PPUADDR
+    lda #0
+    sta PPUADDR
+    ldx #4                  ; name table and attributes follow the tiles
+    jsr copy_pages
+    lda #$3F
+    sta PPUADDR
+    lda #0
+    sta PPUADDR
+    ldx #0
+:   lda title_pal,x
+    sta PPUDATA
+    inx
+    cpx #16
+    bne :-
+    lda #0
+    jsr set_bank
+    lda #$FF
+    sta set_loaded          ; the game's tiles are gone
+    jsr clear_oam
+    lda #TITLE_S0_Y - 1
+    sta OAM
+    lda #TITLE_S0_TILE
+    sta OAM+1
+    lda #$20                ; behind the background
+    sta OAM+2
+    lda #TITLE_S0_X
+    sta OAM+3
+    lda #TITLE_SKY
+    sta bgcol
+    lda #%10000000          ; NMI on; sprites and the top of the picture from $0000
+    sta ctrl_shadow
+    lda #SONG_TITLE
+    jsr music_start
+    lda #120
+    sta count
+    lda #0
+    sta flash
+    jsr screen_on
+    jsr wait_nmi
+loop:
+    jsr wait_nmi
+    ; wait for last frame's sprite 0 hit to clear, then for this frame's (with a way out)
+    ldx #0
+:   bit PPUSTATUS
+    bvc :+
+    dex
+    bne :-
+:   ldx #0
+    ldy #8
+:   bit PPUSTATUS
+    bvs hit
+    dex
+    bne :-
+    dey
+    bne :-
+hit:
+    lda #%10010000          ; the bottom of the picture from $1000
+    sta PPUCTRL
+    jsr read_joy
+    jsr random
+    ; lightning in the sky now and then
+    lda flash
+    beq :+
+    dec flash
+    ldx flash
+    lda title_flash,x
+    sta bgcol
+    jmp keys
+:   dec count
+    bne keys
+    lda rng
+    ora #$40
+    sta count
+    lda #6
+    sta flash
+keys:
+    lda joy_prev
+    eor #$FF
+    and joy
+    and #J_START|J_A
+    beq loop
+    lda #TITLE_SKY
+    sta bgcol
+    rts
+.endproc
+
+; A/X = a text page in bank 1 (tools/screens.py): 16 palette bytes, 64 attribute bytes, then
+; lines of (address hi, address lo, text, 0), ended by $FF. Waits for START or A.
+.proc text_screen
+    sta ptr2
+    stx ptr2+1
+    jsr screen_off
+    lda #0                  ; the font is in the indoor tiles
+    jsr set_bank
+    lda #0
+    jsr load_tiles
+    lda #1
+    jsr set_bank
+    lda #$20
+    sta PPUADDR
+    lda #0
+    sta PPUADDR
+    lda #BLANK
+    ldx #0
+    ldy #4
+:   sta PPUDATA             ; 1024 blanks, the attributes come after
+    dex
+    bne :-
+    dey
+    bne :-
+    lda #$23
+    sta PPUADDR
+    lda #$C0
+    sta PPUADDR
+    ldy #16
+:   lda (ptr2),y
+    sta PPUDATA
+    iny
+    cpy #16+64
+    bne :-
+    lda #$3F
+    sta PPUADDR
+    lda #0
+    sta PPUADDR
+    ldy #0
+:   lda (ptr2),y
+    sta PPUDATA
+    iny
+    cpy #16
+    bne :-
+    lda #16+64
+    jsr advance
+line:
+    ldy #0
+    lda (ptr2),y
+    cmp #$FF
+    beq done
+    sta PPUADDR
+    iny
+    lda (ptr2),y
+    sta PPUADDR
+    iny
+:   lda (ptr2),y
+    beq :+
+    sta PPUDATA
+    iny
+    bne :-
+:   iny
+    tya
+    jsr advance
+    jmp line
+done:
+    lda #0
+    jsr set_bank
+    jsr clear_oam
+    lda #$0F
+    sta bgcol
+    lda #CTRL
+    sta ctrl_shadow
+    jsr screen_on
+:   jsr wait_nmi            ; wait for START or A to be pressed (not still held)
+    jsr read_joy
+    jsr random
+    lda joy_prev
+    eor #$FF
+    and joy
+    and #J_START|J_A
+    beq :-
+    rts
+advance:
+    clc
+    adc ptr2
+    sta ptr2
+    bcc :+
+    inc ptr2+1
+:   rts
 .endproc
 
 ; ---- the vblank queue --------------------------------------------------------
@@ -606,24 +874,7 @@ done:
     ldx room
     lda room_lit,x
     sta cur_lit
-    cmp set_loaded
-    beq have_set
-    sta set_loaded
-    lda #0
-    sta rain_step
-    sta PPUADDR
-    sta PPUADDR
-    lda #<chr_in
-    ldx #>chr_in
-    ldy cur_lit
-    beq :+
-    lda #<chr_out
-    ldx #>chr_out
-:   sta ptr
-    stx ptr+1
-    ldx #16
-    jsr copy_pages
-have_set:
+    jsr load_tiles
     ; the room's metatiles
     lda #<room_maps
     sta ptr
