@@ -1,6 +1,7 @@
-; Ghost Hour - NES port, milestone 2: all 13 rooms with their exits, candle lighting, wax,
-; lightning and rain. The game logic is a port of the C64 version (../src/main.asm),
-; with speeds and timers rescaled from 50 Hz (PAL C64) to 60 Hz (NTSC NES).
+; Ghost Hour - NES port, milestone 3: the whole game without sound or title screen: 13 rooms,
+; candle lighting, ghosts, bats, wolves, candles, clock parts, Brooke and the clock.
+; The game logic is a port of the C64 version (../src/main.asm), with speeds and timers
+; rescaled from 50 Hz (PAL C64) to 60 Hz (NTSC NES).
 ;
 ; Screen: rows 0-1 empty, rows 2-23 the room (16x11 metatiles of 2x2 tiles), rows 25-27 the HUD.
 ; The PPU can only be written in vertical blank, so the main loop queues changes in vbuf and the
@@ -39,15 +40,21 @@ WAX_FULL = 64
 BURN_SLOW = 108             ; frames per unit of wax (C64: 90 at 50 Hz)
 BURN_FAST = 10              ; same, with the candle raised (C64: 8)
 MSG_TIME = 180
+MSG_FOREVER = $FF           ; msg_timer value for a message that stays
+NERVE_FULL = 5
+RESCUE_TIME = 120           ; frames of raised candle that calm Brooke (C64: 100)
 CTRL     = %10001000        ; NMI on, sprites from $1000, background from $0000
 MASK_ON  = %00011110        ; show background and sprites, also in the left 8 px
 VB_BUDGET = 96              ; vblank work per frame: data bytes + 2 per run
 ROOM_ROWS = 22              ; tile rows of the room
 ROOM_TOP  = 2               ; tile row where the room starts
-HUD_NAME  = $2000 + 26*32 + 2
-HUD_GAUGE = $2000 + 26*32 + 22
+; HUD: row 24 a rule, 25 room name and wax, 26 nerve and clock parts, 27 messages
+HUD_GAUGE = $2000 + 25*32 + 22
+HUD_HEARTS = $2000 + 26*32 + 8
+HUD_ICONS = $2000 + 26*32 + 24
 HUD_MSG   = $2000 + 27*32 + 2
 MSG_LEN   = 28
+E_BROOKE  = 3
 
 .include "gen_const.inc"
 
@@ -119,6 +126,29 @@ msg_ptr:   .res 2
 msg_timer: .res 1
 msg_dirty: .res 1
 hud_dirty: .res 1
+; the player's state, the clock, Brooke
+nerve:     .res 1
+invuln:    .res 1           ; frames of safety after a scare
+parts:     .res 1           ; clock parts: bits 0-3 cog, spring, pendulum, key
+game_over: .res 1           ; 1 the clock strikes, 2 fainted
+red_flash: .res 1
+clock_cd:  .res 1
+rescued:   .res 1
+rescue_t:  .res 1
+brooke_said: .res 1
+dark_tick: .res 1
+all_lit:   .res 1           ; the ending: every light in the room is on
+item_type: .res 1           ; this room's item, $FF none
+item_x:    .res 2
+item_y:    .res 1
+; sprite drawing
+oam_i:     .res 1
+ox:        .res 2
+oy:        .res 1
+oattr:     .res 1
+ofr:       .res 1
+count:     .res 1
+idle_n:    .res 1
 
 .segment "BSS"
 vbuf:      .res 256         ; queued PPU writes: [length, address hi, address lo, data...], 0 ends
@@ -128,7 +158,17 @@ CUR_L:     .res ROOM_ROWS   ; light span on screen, per row
 CUR_R:     .res ROOM_ROWS
 NEW_L:     .res ROOM_ROWS   ; light span wanted, per row
 NEW_R:     .res ROOM_ROWS
-gauge_buf: .res 8
+hud_buf:   .res 17          ; wax gauge (8), hearts (5), clock parts (4)
+E_TYPE:    .res 2           ; the room's two enemies: 0 ghost, 1 bat, 2 wolf, 3 Brooke, $FF none
+E_X:       .res 2
+E_XH:      .res 2
+E_Y:       .res 2
+E_DIR:     .res 2
+E_T:       .res 2
+E_FLEE:    .res 2
+E_HOME:    .res 2
+E_DRAWY:   .res 2
+ITEM_GONE: .res NUM_ROOMS
 
 ; ---------------------------------------------------------------------------
 .segment "BANK0"
@@ -147,8 +187,12 @@ bank_table: .byte 0, 1
 part_dx:   .byte 0, 8, 16, 0, 8, 16, 0, 8, 16
 part_dxf:  .byte 16, 8, 0, 16, 8, 0, 16, 8, 0
 part_dy:   .byte 0, 0, 0, 8, 8, 8, 16, 16, 16
-mul9:      .byte 0, 9, 18, 27, 36, 45, 54
 run_cycle: .byte 1, 2, 3, 2
+part_bits: .byte 1, 2, 4, 8
+enemy_frame: .byte F_GHOST1, F_BAT1, F_WOLF1, F_BROOKE1
+bob_table: .byte 0, 1, 2, 3, 3, 3, 2, 1, 0, $FF, $FE, $FD, $FD, $FD, $FE, $FF
+bat_wave:  .byte 0, 3, 6, 9, 11, 13, 15, 16, 16, 16, 15, 13, 11, 9, 6, 3
+           .byte 0, $FD, $FA, $F7, $F5, $F3, $F1, $F0, $F0, $F0, $F1, $F3, $F5, $F7, $FA, $FD
 flash_seq: .byte $0F, $30, $30, $0F, $0F, $30, $10, $30   ; C64: 0,1,1,0,0,1,15,1
 
 ; per room row: name table address, and the row in LITBUF
@@ -225,6 +269,8 @@ row_lblo:  .repeat ROOM_ROWS, r
     sta bgcol
     lda #WAX_FULL
     sta wax
+    lda #NERVE_FULL
+    sta nerve
     lda #<300
     sta thunder_t
     lda #>300
@@ -238,8 +284,11 @@ row_lblo:  .repeat ROOM_ROWS, r
     lda #START_Y
     sta py
     jsr enter_room
+    lda #<msg_start
+    ldx #>msg_start
+    jsr show_message
     jsr player_anim
-    jsr draw_player
+    jsr draw_sprites
 
     lda #CTRL
     sta PPUCTRL
@@ -260,15 +309,98 @@ row_lblo:  .repeat ROOM_ROWS, r
     jsr enter_room
 :   jsr candle_update
     jsr player_update
+    jsr enemies_update
+    jsr item_update
+    jsr clock_check
     jsr storm_update
     jsr hud_update
     jsr rain_update
     jsr light_update
     jsr light_flush
-    jsr draw_player
+    jsr draw_sprites
     jsr vb_end
     inc frame
+    lda game_over
+    bne ending
     jmp main_loop
+.endproc
+
+; The clock strikes twelve (game_over 1), or you faint (2). Then START plays again.
+.proc ending
+    cmp #1
+    beq win
+    lda #2                  ; the red flash of the last scare, then dark
+    jsr idle_frames
+    lda #0
+    sta red_flash
+    lda #$0F
+    sta bgcol
+    lda #58
+    jsr idle_frames
+    lda #<msg_faint
+    ldx #>msg_faint
+    jmp wait_start
+win:
+    ; every light in the room comes on, and the bell tolls twelve times
+    lda #$FF
+    sta E_TYPE
+    sta E_TYPE+1
+    sta item_type
+    lda #1
+    sta all_lit
+    ldx #ROOM_ROWS-1
+:   lda #0
+    sta NEW_L,x
+    lda #32
+    sta NEW_R,x
+    dex
+    bpl :-
+    lda #<msg_win
+    ldx #>msg_win
+    jsr show_message
+    lda #12
+    sta count
+bell:
+    lda #$30
+    sta bgcol
+    lda #2
+    jsr idle_frames
+    lda #$0F
+    sta bgcol
+    lda #55
+    jsr idle_frames
+    dec count
+    bne bell
+    lda #<msg_welldone
+    ldx #>msg_welldone
+wait_start:
+    jsr show_message
+    lda #MSG_FOREVER
+    sta msg_timer
+:   lda #1
+    jsr idle_frames
+    lda joy_prev
+    eor #$FF
+    and joy
+    and #J_START
+    beq :-
+    jmp reset
+.endproc
+
+; A frames with nothing moving: the screen, the HUD and the sprites keep up
+.proc idle_frames
+    sta idle_n
+:   jsr wait_nmi
+    jsr vb_begin
+    jsr read_joy
+    jsr hud_update
+    jsr light_flush
+    jsr draw_sprites
+    jsr vb_end
+    inc frame
+    dec idle_n
+    bne :-
+    rts
 .endproc
 
 ; X pages from (ptr) to PPUDATA
@@ -574,9 +706,11 @@ nrow:
     lda ptr+1
     cmp #>(LITBUF + ROOM_ROWS*32)
     bne nrow
-    ; HUD: row 24 empty, row 25 a rule, row 26 name and wax, rows 27-29 empty
+    ; HUD: row 24 a rule; 25 name and wax; 26 nerve and clock parts; 27 messages; 28-29 empty
+    jsr spawn_enemies       ; before the sprite palettes, which depend on them
+    jsr make_hud
     lda #BLANK
-    ldx #33
+    ldx #1
     jsr fill_ppu
     lda #T_RULE
     ldx #30
@@ -599,21 +733,32 @@ nrow:
     lda #BLANK
     ldx #6
     jsr fill_ppu
-    ldy #0
-:   lda txt_wax,y
-    sta PPUDATA
-    iny
-    cpy #4
-    bne :-
-    jsr make_gauge
-    ldy #0
-:   lda gauge_buf,y
-    sta PPUDATA
-    iny
-    cpy #8
-    bne :-
+    lda #<txt_wax
+    ldx #>txt_wax
+    jsr put_text
+    ldx #0
+    ldy #8
+    jsr put_hud
     lda #BLANK
-    ldx #2+96
+    ldx #4
+    jsr fill_ppu
+    lda #<txt_nerve
+    ldx #>txt_nerve
+    jsr put_text
+    ldx #8
+    ldy #5
+    jsr put_hud
+    lda #BLANK
+    ldx #5
+    jsr fill_ppu
+    lda #<txt_clock
+    ldx #>txt_clock
+    jsr put_text
+    ldx #13
+    ldy #4
+    jsr put_hud
+    lda #BLANK
+    ldx #4+96
     jsr fill_ppu
     ; attributes
     lda #<room_attrs
@@ -646,11 +791,15 @@ nrow:
     cpy #16
     bne :-
     ldy #0
-:   lda spr_palettes,y
+:   lda spr_palettes,y      ; the hero, and flame and items
     sta PPUDATA
     iny
-    cpy #16
+    cpy #8
     bne :-
+    ldx #0                  ; the two enemies
+    jsr put_enemy_pal
+    ldx #1
+    jsr put_enemy_pal
 
     ; light: everything dark, nothing queued
     ldx #ROOM_ROWS-1
@@ -677,6 +826,87 @@ nrow:
     sta mask_shadow
     lda #0
     sta nmi_skip            ; the next NMI turns the screen back on
+    sta brooke_said
+    lda #1
+    sta msg_dirty           ; the message row was drawn empty
+    ; this room's item
+    ldx room
+    lda #$FF
+    sta item_type
+    lda ITEM_GONE,x
+    bne :+
+    lda room_item,x
+    sta item_type
+    lda room_item_x,x
+    sta item_x
+    lda #0
+    sta item_x+1
+    lda room_item_y,x
+    sta item_y
+:   ; a clock part here?
+    lda item_type
+    cmp #4
+    bcs :+
+    lda #<msg_glint
+    ldx #>msg_glint
+    jmp show_message
+:   ; Brooke calls out
+    lda E_TYPE+1
+    cmp #E_BROOKE
+    bne quiet
+    lda rescued
+    bne :+
+    lda #<msg_help
+    ldx #>msg_help
+    jmp show_message
+:   lda #<msg_waits
+    ldx #>msg_waits
+    jmp show_message
+quiet:
+    rts
+.endproc
+
+; text at A/X (0 ends) to PPUDATA
+.proc put_text
+    sta ptr2
+    stx ptr2+1
+    ldy #0
+:   lda (ptr2),y
+    beq :+
+    sta PPUDATA
+    iny
+    bne :-
+:   rts
+.endproc
+
+; Y bytes of hud_buf from X to PPUDATA
+.proc put_hud
+:   lda hud_buf,x
+    sta PPUDATA
+    inx
+    dey
+    bne :-
+    rts
+.endproc
+
+; sprite palette 2+X for enemy X: transparent, then its 3 colours
+.proc put_enemy_pal
+    lda #$0F
+    sta PPUDATA
+    lda E_TYPE,x
+    cmp #$FF
+    bne :+
+    lda #0
+:   sta tmp
+    asl
+    adc tmp                 ; type * 3
+    tay
+    ldx #3
+:   lda enemy_pals,y
+    sta PPUDATA
+    iny
+    dex
+    bne :-
     rts
 .endproc
 
@@ -1263,6 +1493,21 @@ burn:
 :   lda #1
     sta hud_dirty
 burnt:
+    ; no light at all wears your nerve down
+    lda wax
+    bne nodark
+    lda cur_lit
+    bne nodark
+    inc dark_tick
+    bne nodark
+    lda #<msg_snuff
+    ldx #>msg_snuff
+    jsr show_message
+    lda invuln
+    bne nodark
+    lda #1
+    jsr hurt_player
+nodark:
     ; radius from wax left
     lda wax
     beq r0
@@ -1337,6 +1582,7 @@ rr: sta radius
 ; Works out the light span each row should have, when the light moved or changed size.
 .proc light_update
     lda cur_lit
+    ora all_lit             ; the ending sets every span itself
     beq :+
     rts
 :   lda radius
@@ -1577,6 +1823,16 @@ lit:
 
 ; ---- storm, rain, HUD ----------------------------------------------------------
 .proc storm_update
+    jsr storm
+    lda red_flash           ; a scare turns the backdrop red for a moment
+    beq :+
+    dec red_flash
+    lda #$16
+    sta bgcol
+:   rts
+.endproc
+
+.proc storm
     lda flash
     beq waiting
     dec flash
@@ -1694,8 +1950,8 @@ out:
     rts
 .endproc
 
-; wax gauge: 8 tiles, each 0-8 columns full
-.proc make_gauge
+; HUD values into hud_buf: wax gauge (8 tiles, each 0-8 columns full), hearts (5), clock parts (4)
+.proc make_hud
     lda wax
     sta tmp
     ldx #0
@@ -1706,7 +1962,7 @@ out:
 :   sta tmp2
     clc
     adc #T_GAUGE
-    sta gauge_buf,x
+    sta hud_buf,x
     lda tmp
     sec
     sbc tmp2
@@ -1714,34 +1970,84 @@ out:
     inx
     cpx #8
     bne :--
+    ldy #0
+:   lda #T_HEART
+    cpy nerve
+    bcc :+
+    lda #T_HEART0
+:   sta hud_buf,x
+    inx
+    iny
+    cpy #5
+    bne :--
+    ldy #0
+:   lda parts
+    and part_bits,y
+    beq :+
+    tya
+    clc
+    adc #T_ICON
+    bne :++
+:   lda #T_ICON0
+:   sta hud_buf,x
+    inx
+    iny
+    cpy #4
+    bne :---
+    rts
+.endproc
+
+; queue hud_buf from X, Y bytes, at vaddr
+.proc queue_hud
+    sty tmp3
+    stx tmp4
+    tya
+    jsr vb_head
+    ldy tmp4
+:   lda hud_buf,y
+    sta vbuf,x
+    inx
+    iny
+    dec tmp3
+    bne :-
+    stx vbx
     rts
 .endproc
 
 .proc hud_update
     lda hud_dirty
     beq msg
-    lda #10
+    lda #8+5+4+6
     jsr vb_fits
     bcc msg
     lda #0
     sta hud_dirty
-    jsr make_gauge
+    jsr make_hud
     lda #<HUD_GAUGE
     sta vaddr
     lda #>HUD_GAUGE
     sta vaddr+1
-    lda #8
-    jsr vb_head
-    ldy #0
-:   lda gauge_buf,y
-    sta vbuf,x
-    inx
-    iny
-    cpy #8
-    bne :-
-    stx vbx
+    ldx #0
+    ldy #8
+    jsr queue_hud
+    lda #<HUD_HEARTS
+    sta vaddr
+    lda #>HUD_HEARTS
+    sta vaddr+1
+    ldx #8
+    ldy #5
+    jsr queue_hud
+    lda #<HUD_ICONS
+    sta vaddr
+    lda #>HUD_ICONS
+    sta vaddr+1
+    ldx #13
+    ldy #4
+    jsr queue_hud
 msg:
     lda msg_timer
+    beq :+
+    cmp #MSG_FOREVER
     beq :+
     dec msg_timer
     bne :+
@@ -1782,64 +2088,1036 @@ out:
     rts
 .endproc
 
-; ---- sprites -------------------------------------------------------------------
-; The hero is up to 9 tiles (3x3). Facing left flips each tile and mirrors the columns.
-; Tiles off the left or right edge of the screen are left out.
-.proc draw_player
-    ldx pframe
-    lda mul9,x
-    sta tmp                 ; first entry of this frame in hero_tiles
+; ---- scares ------------------------------------------------------------------
+; A = nerve lost
+.proc hurt_player
+    sta tmp
+    lda invuln
+    bne out
+    lda #144
+    sta invuln
+    lda nerve
+    sec
+    sbc tmp
+    bcs :+
     lda #0
-    sta tmp2                ; part 0-8
-    ldy #0                  ; OAM offset
+:   sta nerve
+    bne :+
+    lda #2
+    sta game_over
+:   lda #1
+    sta hud_dirty
+    lda #2
+    sta red_flash
+    lda #<msg_eek
+    ldx #>msg_eek
+    jmp show_message
+out:
+    rts
+.endproc
+
+; ---- enemies -------------------------------------------------------------------
+.proc spawn_enemies
+    ldx room
+    lda room_e0_type,x
+    sta E_TYPE
+    lda room_e1_type,x
+    sta E_TYPE+1
+    lda room_e0_x,x
+    sta E_X
+    lda room_e1_x,x
+    sta E_X+1
+    lda #0
+    sta E_XH
+    sta E_XH+1
+    lda room_e0_y,x
+    sta E_Y
+    sta E_HOME
+    lda room_e1_y,x
+    sta E_Y+1
+    sta E_HOME+1
+    ldx #1
 loop:
+    lda #0
+    sta E_FLEE,x
+    sta E_DIR,x
+    lda rng
+    sta E_T,x
+    jsr random
+    lda E_Y,x
+    sta E_DRAWY,x
+    lda E_TYPE,x            ; Brooke stays exactly where she is
+    cmp #E_BROOKE
+    beq far
+    ; never spawn on top of the player: half a screen away
+    lda E_X,x
+    sec
+    sbc px
+    sta tmp
+    lda E_XH,x
+    sbc px+1
+    bmi neg
+    bne far
     lda tmp
-    clc
-    adc tmp2
-    tax
-    lda hero_tiles,x
-    beq next                ; empty tile: no sprite
-    sta OAM+1,y
-    ldx tmp2
-    lda facing
-    beq :+
-    lda part_dxf,x
-    ldx #$40
-    bne :++
-:   lda part_dx,x
-    ldx #$00
-:   stx tmp3                ; attributes
-    clc
-    adc px
-    sta OAM+3,y
-    lda px+1
-    adc #0
-    bne next                ; off screen sideways
-    lda tmp3
-    sta OAM+2,y
-    ldx tmp2
-    lda part_dy,x
-    clc
-    adc py
-    clc
-    adc #15                 ; room top is y 16; sprites show one line lower
-    sta OAM,y
-    iny
-    iny
-    iny
-    iny
-next:
-    inc tmp2
+    cmp #80
+    bcs far
+    bcc move
+neg:
+    cmp #$FF
+    bne far
+    lda tmp
+    cmp #$B0
+    bcc far
+move:
+    lda E_X,x
+    eor #$80                ; + 128, wrapping round
+    cmp #233
+    bcc :+
+    lda #232
+:   sta E_X,x
+far:
+    dex
+    bpl loop
+    ; once rescued she leaves the Bedroom and waits by the clock
+    lda rescued
+    beq out
+    ldx room
+    cpx #BROOKE_ROOM
+    bne :+
+    lda #$FF
+    sta E_TYPE+1
+    rts
+:   cpx #HALL_ROOM
+    bne out
+    lda #E_BROOKE
+    sta E_TYPE+1
+    lda #BROOKE_HALL_X
+    sta E_X+1
+    lda #0
+    sta E_XH+1
+    lda #BROOKE_HALL_Y
+    sta E_Y+1
+    sta E_DRAWY+1
+out:
+    rts
+.endproc
+
+.proc enemies_update
+    ldx #0
+    jsr enemy_one
+    ldx #1
+    ; fall through
+.endproc
+.proc enemy_one
+    lda E_TYPE,x
+    cmp #$FF
+    bne :+
+    rts
+:   inc E_T,x
+    cmp #0
+    bne :+
+    jmp ghost_update
+:   cmp #1
+    bne :+
+    jmp bat_update
+:   cmp #2
+    bne :+
+    jmp wolf_update
+:   jmp brooke_update
+.endproc
+
+; carry set when the player's raised candle scares this enemy. Uses tmp2.
+.proc flare_scares
+    lda flare
+    beq no
+    lda E_X,x
+    sec
+    sbc px
+    sta tmp2
+    lda E_XH,x
+    sbc px+1
+    beq pos
+    cmp #$FF
+    bne no
     lda tmp2
-    cmp #9
-    bne loop
-    lda #$FF                ; hide the rest
+    eor #$FF
+    clc
+    adc #1
+    sta tmp2
+    beq no
+pos:
+    lda tmp2
+    cmp #64
+    bcs no
+    lda E_Y,x
+    sec
+    sbc py
+    bcs :+
+    eor #$FF
+    adc #1
+:   cmp #56
+    bcs no
+    sec
+    rts
+no:
+    clc
+    rts
+.endproc
+
+; carry set when enemy X is at or to the right of the player (signed 16-bit)
+.proc enemy_cmp
+    lda E_X,x
+    cmp px
+    lda E_XH,x
+    sbc px+1
+    bvc :+
+    eor #$80
+:   bmi less
+    sec
+    rts
+less:
+    clc
+    rts
+.endproc
+
+; one pixel towards (A=0) or away from (A=1) the player
+.proc step_x
+    sta tmp
+    jsr enemy_cmp
+    lda #0
+    rol                     ; 1 = enemy is on the right
+    eor tmp                 ; 1 = decrease x
+    bne dec_x
+    inc E_X,x
+    bne :+
+    inc E_XH,x
+:   rts
+dec_x:
+    lda E_X,x
+    bne :+
+    dec E_XH,x
+:   dec E_X,x
+    rts
+.endproc
+
+; Speeds: the C64 moves enemies every frame at 50 Hz. At 60 Hz they skip one frame in 8
+; (ghosts: 1 in 16 of their half-speed frames) to keep about the same pace.
+.proc ghost_update
+    lda E_FLEE,x
+    beq hunt
+    dec E_FLEE,x
+    ; flee fast; at the edges they sink through the walls
+    lda #1
+    jsr step_x
+    lda #1
+    jsr step_x
+    jsr ghost_y_away
+    jmp draw
+hunt:
+    jsr flare_scares
+    bcc chase
+    lda #72
+    sta E_FLEE,x
+    jmp draw
+chase:
+    lda E_T,x
+    and #1
+    bne draw
+    lda E_T,x
+    and #15
+    beq draw
+    lda #0
+    jsr step_x
+    lda E_Y,x               ; vertical chase
+    cmp py
+    beq draw
+    bcc :+
+    dec E_Y,x
+    jmp draw
+:   inc E_Y,x
+draw:
+    jsr clamp_enemy
+    jsr enemy_cmp
+    lda #0
+    rol
+    sta E_DIR,x
+    ; gentle bob
+    lda E_T,x
+    lsr
+    lsr
+    and #15
+    tay
+    lda bob_table,y
+    clc
+    adc E_Y,x
+    sta E_DRAWY,x
+    jmp touch_check
+.endproc
+
+.proc ghost_y_away
+    lda E_Y,x
+    cmp py
+    bcc :+
+    inc E_Y,x
+    rts
+:   dec E_Y,x
+    rts
+.endproc
+
+; keep x in 0-232 and y in 0-156
+.proc clamp_enemy
+    lda E_XH,x
+    bmi low
+    bne high
+    lda E_X,x
+    cmp #233
+    bcc yclamp
+high:
+    lda #232
+    sta E_X,x
+    lda #0
+    sta E_XH,x
+    beq yclamp
+low:
+    lda #0
+    sta E_X,x
+    sta E_XH,x
+yclamp:
+    lda E_Y,x
+    cmp #240
+    bcs ylow
+    cmp #156
+    bcc out
+    lda #156
+    sta E_Y,x
+out:
+    rts
+ylow:
+    lda #0
+    sta E_Y,x
+    rts
+.endproc
+
+; swoops along in a wave and turns at the walls
+.proc bat_update
+    lda E_FLEE,x
+    beq :+
+    dec E_FLEE,x
+    jmp fly
+:   jsr flare_scares
+    bcc fly
+    lda #48
+    sta E_FLEE,x
+    jsr enemy_cmp
+    lda #0
+    rol
+    eor #1                  ; head away from the player
+    sta E_DIR,x
+fly:
+    lda E_T,x
+    and #7
+    beq wave
+    lda E_DIR,x
+    bne left
+    lda E_X,x
+    clc
+    adc #2
+    sta E_X,x
+    lda E_XH,x
+    adc #0
+    sta E_XH,x
+    bne turn
+    lda E_X,x
+    cmp #228
+    bcc wave
+turn:
+    lda #1
+    sta E_DIR,x
+    bne wave
+left:
+    lda E_X,x
+    sec
+    sbc #2
+    sta E_X,x
+    lda E_XH,x
+    sbc #0
+    sta E_XH,x
+    bpl wave
+    lda #0
+    sta E_X,x
+    sta E_XH,x
+    sta E_DIR,x
+wave:
+    lda E_T,x
+    lsr
+    and #31
+    tay
+    lda bat_wave,y
+    clc
+    adc E_HOME,x
+    sta E_Y,x
+    sta E_DRAWY,x
+    jmp touch_check
+.endproc
+
+.proc wolf_update
+    lda E_FLEE,x
+    beq :+
+    dec E_FLEE,x
+    jmp walk
+:   jsr flare_scares
+    bcc walk
+    lda #54
+    sta E_FLEE,x
+    jsr enemy_cmp
+    lda #0
+    rol
+    eor #1
+    sta E_DIR,x
+walk:
+    ; walks at 1 px a frame; scared wolves run at 2
+    lda E_T,x
+    and #7
+    beq :+
+    jsr wolf_step
+    lda E_FLEE,x
+    beq :+
+    jsr wolf_step
+:   lda E_Y,x
+    sta E_DRAWY,x
+    jmp touch_check
+.endproc
+
+.proc wolf_step
+    lda E_DIR,x
+    bne left
+    lda E_X,x
+    clc
+    adc #1
+    sta E_X,x
+    lda E_XH,x
+    adc #0
+    sta E_XH,x
+    lda E_X,x               ; ahead: the right edge
+    clc
+    adc #20
+    jmp check
+left:
+    lda E_X,x
+    sec
+    sbc #1
+    sta E_X,x
+    lda E_XH,x
+    sbc #0
+    sta E_XH,x
+    lda E_X,x
+    clc
+    adc #2
+check:
+    sta tx
+    lda E_XH,x
+    adc #0
+    sta tx+1
+    stx tmp5
+    ; floor under the leading foot, wall in front
+    lda E_Y,x
+    clc
+    adc #21
+    sta ty
+    jsr probe
+    and #TF_SOLID|TF_PLATFORM
+    beq turn
+    ldx tmp5
+    lda E_Y,x
+    clc
+    adc #10
+    sta ty
+    jsr probe
+    and #TF_SOLID
+    bne turn
+    ldx tmp5                ; stay on screen
+    lda E_XH,x
+    bne turn
+    lda E_X,x
+    cmp #216
+    bcs turn
+    rts
+turn:
+    ldx tmp5
+    lda E_DIR,x
+    eor #1
+    sta E_DIR,x
+    rts
+.endproc
+
+; Brooke is afraid of the dark: keep the candle raised beside her and she
+; finds the courage to hand over the winding key
+.proc brooke_update
+    lda E_Y,x
+    sta E_DRAWY,x
+    jsr enemy_cmp
+    lda #0
+    rol
+    sta E_DIR,x
+    lda rescued
+    beq :+
+    lda #0                  ; calm now: stop trembling
+    sta E_T,x
+    rts
+:   lda E_X,x
+    sec
+    sbc px
+    tay
+    lda E_XH,x
+    sbc px+1
+    beq pos
+    cmp #$FF
+    bne out
+    tya
+    eor #$FF
+    clc
+    adc #1
+    tay
+    beq out
+pos:
+    cpy #40
+    bcs out
+    lda E_Y,x
+    sec
+    sbc py
+    bcs :+
+    eor #$FF
+    adc #1
+:   cmp #24
+    bcs out
+    lda flare
+    bne lighting
+    lda msg_timer           ; say it when the row is free, or straight away on arrival
+    beq say
+    lda brooke_said
+    bne out
+say:
+    lda #1
+    sta brooke_said
+    lda wax
+    bne :+
+    lda #<msg_nowax
+    ldx #>msg_nowax
+    jmp show_message
+:   lda #<msg_hold
+    ldx #>msg_hold
+    jmp show_message
+lighting:
+    lda brooke_said
+    cmp #2
+    beq :+
+    lda #2
+    sta brooke_said
+    lda #<msg_keep
+    ldx #>msg_keep
+    jsr show_message
+:   inc rescue_t
+    lda rescue_t
+    cmp #RESCUE_TIME
+    bcc out
+    lda #1
+    sta rescued
+    sta hud_dirty
+    lda parts
+    ora #8
+    sta parts
+    lda #<msg_thanks
+    ldx #>msg_thanks
+    jmp show_message
+out:
+    rts
+.endproc
+
+; did this enemy catch the player?
+.proc touch_check
+    lda E_X,x
+    sec
+    sbc px
+    tay
+    lda E_XH,x
+    sbc px+1
+    beq pos
+    cmp #$FF
+    bne miss
+    tya
+    eor #$FF
+    clc
+    adc #1
+    tay
+    beq miss
+pos:
+    cpy #13
+    bcs miss
+    lda E_DRAWY,x
+    sec
+    sbc py
+    bcs :+
+    eor #$FF
+    adc #1
+:   cmp #14
+    bcs miss
+    lda invuln
+    bne miss
+    lda E_TYPE,x
+    cmp #1
+    beq batbite
+    cmp #2
+    beq wolfbite
+    stx tmp5
+    lda #1
+    jsr hurt_player
+    ldx tmp5
+    lda #84
+    sta E_FLEE,x
+    rts
+wolfbite:
+    stx tmp5
+    lda #2
+    jsr hurt_player
+    ldx tmp5
+    rts
+batbite:
+    ; bats go for the candle: wax rather than nerve
+    lda wax
+    sec
+    sbc #12
+    bcs :+
+    lda #0
+:   sta wax
+    lda #72
+    sta invuln
+    lda #1
+    sta hud_dirty
+    lda #48
+    sta E_FLEE,x
+    stx tmp5
+    lda #<msg_bat
+    ldx #>msg_bat
+    jsr show_message
+    ldx tmp5
+miss:
+    rts
+.endproc
+
+; ---- pick-ups and the clock ------------------------------------------------------
+.proc item_update
+    lda item_type
+    cmp #$FF
+    beq out
+    lda item_x
+    sec
+    sbc px
+    tay
+    lda item_x+1
+    sbc px+1
+    beq pos
+    cmp #$FF
+    bne out
+    tya
+    eor #$FF
+    clc
+    adc #1
+    tay
+    beq out
+pos:
+    cpy #16
+    bcs out
+    lda item_y
+    sec
+    sbc py
+    bcs :+
+    eor #$FF
+    adc #1
+:   cmp #18
+    bcs out
+    ; got it
+    lda item_type
+    cmp #4
+    beq candle
+    tax
+    lda part_bits,x
+    ora parts
+    sta parts
+    ldx room
+    lda #1
+    sta ITEM_GONE,x
+    lda #$FF
+    sta item_type
+    sta hud_dirty
+    lda #<msg_part
+    ldx #>msg_part
+    jmp show_message
+candle:
+    lda #WAX_FULL
+    sta wax
+    lda #1
+    sta hud_dirty
+    lda #$FF
+    sta item_type
+    ldx room                ; the hall's candle box never runs out
+    cpx #HALL_ROOM
+    beq :+
+    lda #1
+    sta ITEM_GONE,x
+:   lda #<msg_candle
+    ldx #>msg_candle
+    jmp show_message
+out:
+    rts
+.endproc
+
+; walking into the clock
+.proc clock_check
+    lda clock_cd
+    beq :+
+    dec clock_cd
+:   lda #12
+    jsr set_tx
+    lda py
+    clc
+    adc #10
+    sta ty
+    jsr probe
+    and #TF_CLOCK
+    beq out
+    lda parts
+    cmp #15
+    bne notyet
+    lda #1
+    sta game_over
+    rts
+notyet:
+    lda clock_cd
+    bne out
+    lda #240
+    sta clock_cd
+    lda #<msg_clock0
+    ldx #>msg_clock0
+    jmp show_message
+out:
+    rts
+.endproc
+
+; tx (16 bit), ty: is that point in the light? Carry set when lit.
+.proc in_light
+    lda cur_lit
+    ora flash
+    ora all_lit
+    bne yes
+    lda tx+1
+    bne no                  ; off screen
+    lda tx
+    lsr
+    lsr
+    lsr                     ; to tiles
+    sec
+    sbc cx
+    bcs :+
+    eor #$FF
+    adc #1
+:   sta tmp2                ; |dx|
+    lda ty
+    lsr
+    lsr
+    lsr
+    sec
+    sbc cy
+    bcs :+
+    eor #$FF
+    adc #1
+:   cmp #9
+    bcs no
+    cmp radius
+    beq :+
+    bcs no
+:   sta tmp3
+    ; compare with the disc's half width at this |dy|
+    lda radius
+    asl
+    asl
+    asl
+    adc radius              ; radius*9 (max 72, no carry)
+    adc tmp3
+    tay
+    lda disc_table,y
+    cmp tmp2
+    bcc no
+yes:
+    sec
+    rts
+no:
+    clc
+    rts
+.endproc
+
+; ---- sprites -------------------------------------------------------------------
+; Each object is a 3x3 grid of 8x8 sprites (meta_tiles), empty tiles left out. The NES shows
+; at most 8 sprites on a line, so the drawing order flips every frame: when too many share a
+; line they flicker rather than one of them vanishing.
+.proc draw_sprites
+    lda #0
+    sta oam_i
+    lda frame
+    and #1
+    bne odd
+    jsr spr_hero
+    jsr spr_flame
+    jsr spr_item
+    ldx #0
+    jsr spr_enemy
+    ldx #1
+    jsr spr_enemy
+    jmp hide
+odd:
+    ldx #1
+    jsr spr_enemy
+    ldx #0
+    jsr spr_enemy
+    jsr spr_item
+    jsr spr_flame
+    jsr spr_hero
+hide:
+    ldy oam_i
+    lda #$FF
 :   sta OAM,y
     iny
     iny
     iny
     iny
     bne :-
+    rts
+.endproc
+
+.proc spr_hero
+    lda invuln              ; blink while safe after a scare
+    and #4
+    bne out
+    lda pframe
+    clc
+    adc #F_HERO0
+    sta ofr
+    lda px
+    sta ox
+    lda px+1
+    sta ox+1
+    lda py
+    sta oy
+    lda #0
+    ldx facing
+    beq :+
+    lda #$40
+:   sta oattr               ; palette 0
+    jmp draw_meta
+out:
+    rts
+.endproc
+
+; the flame over the candle in the front hand, unless climbing or snuffed out
+.proc spr_flame
+    lda wax
+    beq out
+    lda pframe
+    cmp #5
+    bcs out
+    lda frame
+    lsr
+    lsr
+    and #1
+    ldx flare
+    beq :+
+    lda #2
+:   clc
+    adc #F_FLAME0
+    sta ofr
+    lda py
+    sec
+    sbc #3
+    sta oy
+    lda facing
+    beq right
+    lda px
+    sec
+    sbc #10
+    sta ox
+    lda px+1
+    sbc #0
+    sta ox+1
+    jmp :+
+right:
+    lda px
+    clc
+    adc #10
+    sta ox
+    lda px+1
+    adc #0
+    sta ox+1
+:   lda #1
+    sta oattr
+    jmp draw_meta
+out:
+    rts
+.endproc
+
+; the room's item: in the light it shows, cycling white and yellow; in the dark a glint
+; now and then, white for a clock part and yellow for a candle
+.proc spr_item
+    lda item_type
+    cmp #$FF
+    beq out
+    lda item_x
+    sta ox
+    clc
+    adc #12
+    sta tx
+    lda item_x+1
+    sta ox+1
+    adc #0
+    sta tx+1
+    lda item_y
+    sta oy
+    clc
+    adc #10
+    sta ty
+    jsr in_light
+    bcc glint
+    lda item_type
+    clc
+    adc #F_ITEM_COG
+    sta ofr
+    lda frame
+    lsr
+    lsr
+    lsr
+    and #1                  ; palette 0 (yellow) or 1 (white)
+    sta oattr
+    jmp draw_meta
+glint:
+    lda frame
+    and #31
+    cmp #8
+    bcs out
+    lda #F_ITEM_GLINT
+    sta ofr
+    lda #1
+    ldx item_type
+    cpx #4
+    bcc :+
+    lda #0
+:   sta oattr
+    jmp draw_meta
+out:
+    rts
+.endproc
+
+; enemy X: lit, or only its eyes in the dark (Brooke always shows)
+.proc spr_enemy
+    lda E_TYPE,x
+    cmp #$FF
+    beq out
+    stx count
+    lda E_X,x
+    sta ox
+    clc
+    adc #12
+    sta tx
+    lda E_XH,x
+    sta ox+1
+    adc #0
+    sta tx+1
+    lda E_DRAWY,x
+    sta oy
+    clc
+    adc #10
+    sta ty
+    jsr in_light
+    ldx count
+    bcs shown
+    lda E_TYPE,x
+    cmp #E_BROOKE
+    beq shown
+    lda E_T,x               ; eyes, blinking now and then
+    and #$3F
+    cmp #4
+    bcc out
+    lda E_TYPE,x
+    clc
+    adc #F_EYES_G
+    sta ofr
+    txa
+    ora #2                  ; palette 2 or 3
+    sta oattr
+    jmp draw_meta
+shown:
+    ldy E_TYPE,x
+    lda E_T,x
+    lsr
+    lsr
+    lsr
+    and #1
+    clc
+    adc enemy_frame,y
+    sta ofr
+    txa
+    ora #2
+    ldy E_DIR,x
+    beq :+
+    ora #$40
+:   sta oattr
+    jmp draw_meta
+out:
+    rts
+.endproc
+
+; frame ofr at (ox, oy) with attributes oattr, into OAM from oam_i
+.proc draw_meta
+    ldx ofr
+    lda meta_lo,x
+    sta ptr2
+    lda meta_hi,x
+    sta ptr2+1
+    lda #0
+    sta tmp2                ; part 0-8
+loop:
+    ldy tmp2
+    lda (ptr2),y
+    beq next                ; empty tile: no sprite
+    ldy oam_i
+    sta OAM+1,y
+    ldx tmp2
+    bit oattr
+    bvs flip
+    lda part_dx,x
+    bvc :+
+flip:
+    lda part_dxf,x
+:   clc
+    adc ox
+    sta OAM+3,y
+    lda ox+1
+    adc #0
+    bne next                ; off screen sideways
+    lda part_dy,x
+    clc
+    adc oy
+    clc
+    adc #15                 ; room top is y 16; sprites show one line lower
+    sta OAM,y
+    lda oattr
+    sta OAM+2,y
+    tya
+    clc
+    adc #4
+    sta oam_i
+next:
+    inc tmp2
+    lda tmp2
+    cmp #9
+    bne loop
     rts
 .endproc
 

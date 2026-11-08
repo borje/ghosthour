@@ -4,10 +4,10 @@ A port of the Commodore 64 game in the parent folder to the 8-bit NES, in 6502 a
 The art is shared: tiles, sprites, font and room settings come from `../tools/`, and
 `tools/build_assets.py` converts them to NES formats.
 
-**Status: milestone 2.** All 13 rooms with their exits, and the candle lighting: in the manor you
-only see what your candle lights, the wax burns down, B raises the candle, and lightning shows the
-whole room for a moment. Outdoors it rains. There are no enemies, items, Brooke, clock or sound yet,
-so nothing refills your wax: when it runs out the light shrinks to a small circle.
+**Status: milestone 3.** The whole game, without sound or a title screen yet. Find the four
+clock parts in the dark manor, rescue Brooke for the winding key, and bring them to the clock in
+the Great Hall, while ghosts, bats and werewolves try to scare you. When the clock strikes twelve, or
+when you faint, press START to play again.
 
 ## Playing
 
@@ -19,6 +19,7 @@ so nothing refills your wax: when it runs out the light shrinks to a small circl
 | Jump                          | A or up     | F or up arrow      |
 | Climb                         | up, down    | arrow keys         |
 | Raise the candle (burns wax)  | B           | D                  |
+| Play again (after the end)    | START       | Enter              |
 
 If the keys differ on your setup, see Options > Gamepad Config in FCEUX.
 
@@ -35,7 +36,8 @@ The ROM is UNROM (mapper 2): 32 KB PRG, 8 KB CHR-RAM, NTSC. FCEUX keeps its sett
 
 ## How it is put together
 
-    src/main.s            the game: rooms, physics, candle and lighting, storm, rain, HUD, sprites
+    src/main.s            the game: rooms, physics, candle and lighting, enemies, items, Brooke,
+                          the clock, storm, rain, HUD, sprites
     src/unrom.cfg         ld65 memory map
     tools/layouts.py      the 13 rooms re-laid at 16 columns (the NES screen is 256 px wide)
     tools/check_map.py    checks that every room, item and Brooke can be reached, and that you can get back
@@ -60,5 +62,9 @@ copied into CHR-RAM when you go between indoors and outdoors.
 - **In the dark** the outlines are drawn in the room's wall colour; the C64 uses one dim blue everywhere.
 - **Greys:** the NES has no dark grey, so the stone rooms use mid and light grey.
 - **Lightning** turns the whole backdrop white, the HUD included, for a frame or two.
-- **The hero** is one 3-colour sprite layer (ink, slicker, skin) instead of two layers. The C64's
-  white details are drawn in the skin colour.
+- **Sprites** are one 3-colour layer instead of the C64's ink layer over a fill layer. The hero
+  and Brooke draw their white details in the skin colour. Each room sets the two enemy palettes.
+  The NES shows at most 8 sprites on a line, so when the hero, the flame, an item and two enemies
+  line up, the drawing order alternates every frame and they flicker instead of vanishing.
+- **The ending** is a message on the HUD for now; the C64's end screens come with the title screen.
+- **Controls:** fire is B, and jump is A as well as up.

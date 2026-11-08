@@ -132,25 +132,61 @@ for lit in SETS:
 assert len(mt["tl"]) < 256
 
 # ---------------------------------------------------------------- sprites
-SPR_PIX = {".": 0, "K": 1, "Y": 2, "S": 3, "W": 3}   # one layer: ink, slicker, skin (C64 white -> skin)
-hero_frames = [sprites.TOP + sprites.LEGS[k].split() for k in ("stand", "run1", "run2", "run3", "jump")]
-hero_frames += [sprites.CLIMB1, sprites.CLIMB2]
+# Every sprite is the C64 24x21 drawing cut into 3x3 tiles (8x8), one colour layer. Facing the
+# other way uses the NES flip bit, so only one direction is stored. Pixel letters -> colour 1-3:
+SPR_MAP = {
+    "hero":   {"K": 1, "Y": 2, "S": 3, "W": 3},     # ink, slicker, skin (C64 white -> skin)
+    "enemy":  {"K": 1, "Y": 2, "S": 3, "W": 3},     # ink, body colour, light details
+    "eyes":   {"Y": 3},
+    "flame":  {"Y": 1, "W": 2},
+    "item":   {"#": 2},
+}
 spr_tiles = [bytes(16)]
-frame_tiles = []
-for f in hero_frames:
-    g = sprites.norm(f) + ["." * 24] * 3
+meta = []           # 9 tile numbers per frame, 0 = empty
+frame_no = {}
+
+
+def add_frame(name, grid, kind):
+    g = sprites.norm(grid) + ["." * 24] * 3
+    frame_no[name] = len(meta) // 9
     for ty in range(3):
         for tx in range(3):
-            t = tile_2bpp([[SPR_PIX[g[ty * 8 + y][tx * 8 + x]] for x in range(8)] for y in range(8)])
+            t = tile_2bpp([[SPR_MAP[kind].get(g[ty * 8 + y][tx * 8 + x], 0) for x in range(8)] for y in range(8)])
             if not any(t):
-                frame_tiles.append(0)
+                meta.append(0)
                 continue
             if t not in spr_tiles:
                 spr_tiles.append(t)
-            frame_tiles.append(spr_tiles.index(t))
+            meta.append(spr_tiles.index(t))
+
+
+for i, k in enumerate(("stand", "run1", "run2", "run3", "jump")):
+    add_frame(f"HERO{i}", sprites.TOP + sprites.LEGS[k].split(), "hero")
+add_frame("HERO5", sprites.CLIMB1, "hero")
+add_frame("HERO6", sprites.CLIMB2, "hero")
+for name in ("GHOST", "BAT", "WOLF", "BROOKE"):
+    for a in (1, 2):
+        add_frame(f"{name}{a}", getattr(sprites, f"{name}{a}"), "enemy")
+for name in ("EYES_G", "EYES_B", "EYES_W"):
+    add_frame(name, getattr(sprites, name), "eyes")
+for i, f in enumerate(sprites.FLAME):
+    add_frame(f"FLAME{i}", f, "flame")
+for k in ("cog", "spring", "pendulum", "key", "candle", "glint"):
+    add_frame("ITEM_" + k.upper(), sprites.ITEMS[k], "item")
+assert len(spr_tiles) <= 256, len(spr_tiles)
 chr_spr = bytearray(4096)
 for i, t in enumerate(spr_tiles):
     chr_spr[i * 16:i * 16 + 16] = t
+
+# sprite palettes: 0 the hero, 1 flame and items, 2 and 3 the room's two enemies (set per room)
+SPR_PAL_HERO = [BLACK, BLACK, C64_TO_NES[7], C64_TO_NES[10]]
+SPR_PAL_ITEM = [BLACK, C64_TO_NES[7], 0x30, 0x2A]
+ENEMY_PAL = [            # colours 1-3 for ghost, bat, wolf, Brooke
+    [BLACK, 0x10, 0x30],     # ghost: grey sheet, white; eyes white
+    [BLACK, 0x00, 0x16],     # bat: dark wings, red eyes
+    [BLACK, 0x07, 0x37],     # wolf: brown, cream snout and paws; eyes cream
+    [BLACK, C64_TO_NES[7], C64_TO_NES[10]],   # Brooke: like the hero, her white dress in the skin colour
+]
 
 # ---------------------------------------------------------------- rooms
 def uses_c(sym):
@@ -258,12 +294,45 @@ data.append(ca65_bytes("room_names", [c for n in names for c in encode(n.ljust(1
 data.append(ca65_bytes("dark_in", set_dark[False]))
 data.append(ca65_bytes("disc_table", disc, 9))
 data.append(ca65_bytes("rain_frames", rain_frames))
-data.append(ca65_bytes("spr_palettes", [BLACK, BLACK, C64_TO_NES[7], C64_TO_NES[10]] * 4))
-data.append(ca65_bytes("hero_tiles", frame_tiles, 9))
-for label, text in (("txt_wax", "WAX:"), ("msg_boom", "BOOM! CRASH!"), ("msg_dark", "YOUR CANDLE IS OUT!")):
+data.append(ca65_bytes("spr_palettes", SPR_PAL_HERO + SPR_PAL_ITEM))
+data.append(ca65_bytes("enemy_pals", [c for p in ENEMY_PAL for c in p]))
+data.append(ca65_bytes("meta_tiles", meta, 9))
+nframes = len(meta) // 9
+data.append("meta_lo:\n" + "".join(f"  .byte <(meta_tiles+{i * 9})\n" for i in range(nframes)))
+data.append("meta_hi:\n" + "".join(f"  .byte >(meta_tiles+{i * 9})\n" for i in range(nframes)))
+for k, v in frame_no.items():
+    const.append(f"F_{k} = {v}\n")
+# enemies and items per room, in NES positions (as the C64 build: x = col*16, y = row*16-5)
+for slot in range(2):
+    es = []
+    for n in names:
+        c64 = (rooms.ROOMS[n]["enemies"] + [None, None])[slot]
+        pos = (layouts.ROOMS[n]["enemies"] + [None, None])[slot]
+        es.append((c64[0], pos[0] * 16, pos[1] * 16 - 5) if c64 else None)
+    data.append(ca65_bytes(f"room_e{slot}_type", [e[0] if e else 255 for e in es]))
+    data.append(ca65_bytes(f"room_e{slot}_x", [e[1] if e else 0 for e in es]))
+    data.append(ca65_bytes(f"room_e{slot}_y", [e[2] & 255 if e else 0 for e in es]))
+items = [(rooms.ROOMS[n]["item"][0],) + tuple(layouts.ROOMS[n]["item"]) if rooms.ROOMS[n]["item"] else None for n in names]
+data.append(ca65_bytes("room_item", [i[0] if i else 255 for i in items]))
+data.append(ca65_bytes("room_item_x", [i[1] * 16 - 4 if i else 0 for i in items]))
+data.append(ca65_bytes("room_item_y", [i[2] * 16 - 2 if i else 0 for i in items]))
+brooke_room = next(n for n in names if any(e[0] == rooms.BROOKE for e in rooms.ROOMS[n]["enemies"]))
+const.append(f"HALL_ROOM = {idx[rooms.HALL_ROOM]}\nBROOKE_ROOM = {idx[brooke_room]}\n")
+const.append(f"BROOKE_HALL_X = {layouts.BROOKE_IN_HALL[0]}\nBROOKE_HALL_Y = {layouts.BROOKE_IN_HALL[1]}\n")
+const.append(f"T_HEART = {FONT['HEART']}\nT_HEART0 = {FONT['HEART0']}\nT_ICON = {FONT['ICON0']}\nT_ICON0 = {FONT['ICON4']}\n")
+MESSAGES = dict(txt_wax="WAX:", txt_nerve="NERVE:", txt_clock="CLOCK:",
+    msg_boom="BOOM! CRASH!", msg_dark="YOUR CANDLE IS OUT!", msg_start="THE GATE SLAMS SHUT!",
+    msg_win="TWELVE O'CLOCK!", msg_candle="A FRESH CANDLE!", msg_part="A CLOCK PART!", msg_eek="EEEK!",
+    msg_bat="A BAT! YOUR WAX!", msg_clock0="IT NEEDS FOUR PARTS.", msg_snuff="TOO DARK! TOO DARK!",
+    msg_help="HELP! UP HERE!", msg_glint="A CLOCK PART IS HERE!", msg_keep="BROOKE: KEEP IT UP...",
+    msg_nowax="BROOKE: FIND A CANDLE!", msg_hold="BROOKE: HOLD B!", msg_thanks="BROOKE: TAKE THIS KEY!",
+    msg_waits="BROOKE WAITS FOR YOU.", msg_welldone="WELL DONE! PRESS START.",
+    msg_faint="YOU FAINT. PRESS START.")
+for label, text in MESSAGES.items():
+    assert len(text) <= 28, text
     data.append(ca65_bytes(label, encode(text) + [0]))
 with open(os.path.join(OUT, "gen_const.inc"), "w") as f:
     f.write("".join(const))
 with open(os.path.join(OUT, "gen_data.inc"), "w") as f:
     f.write("".join(data))
-print(f"sprite tiles: {len(spr_tiles)}, metatiles: {len(mt['tl'])}, rooms: {len(names)}")
+print(f"sprite tiles: {len(spr_tiles)}/256, sprite frames: {len(meta) // 9}, metatiles: {len(mt['tl'])}, rooms: {len(names)}")

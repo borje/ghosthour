@@ -173,3 +173,4 @@ ROOMS = {
 }
 
 START = (40, 139)   # player x, y in room pixels, in the start room (as on the C64)
+BROOKE_IN_HALL = (112, 139)   # where Brooke waits after the rescue: by the clock
