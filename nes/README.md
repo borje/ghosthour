@@ -4,10 +4,11 @@ A port of the Commodore 64 game in the parent folder to the 8-bit NES, in 6502 a
 The art is shared: tiles, sprites, font and room settings come from `../tools/`, and
 `tools/build_assets.py` converts them to NES formats.
 
-**Status: milestone 3.** The whole game, without sound or a title screen yet. Find the four
-clock parts in the dark manor, rescue Brooke for the winding key, and bring them to the clock in
-the Great Hall, while ghosts, bats and werewolves try to scare you. When the clock strikes twelve, or
-when you faint, press START to play again.
+**Status: milestone 4.** The whole game with its music and sound effects; only the title screen
+and the end screens are still to come. Find the four clock parts in the dark manor, rescue Brooke
+for the winding key, and bring them to the clock in the Great Hall, while ghosts, bats and
+werewolves try to scare you. When the clock strikes twelve, or when you faint, press START to play
+again.
 
 ## Playing
 
@@ -38,10 +39,12 @@ The ROM is UNROM (mapper 2): 32 KB PRG, 8 KB CHR-RAM, NTSC. FCEUX keeps its sett
 
     src/main.s            the game: rooms, physics, candle and lighting, enemies, items, Brooke,
                           the clock, storm, rain, HUD, sprites
+    src/sound.s           the music and effects player, run from the NMI
     src/unrom.cfg         ld65 memory map
     tools/layouts.py      the 13 rooms re-laid at 16 columns (the NES screen is 256 px wide)
     tools/check_map.py    checks that every room, item and Brooke can be reached, and that you can get back
-    tools/build_assets.py tile sets, palettes, room tables and hero sprites from the C64 sources
+    tools/build_assets.py tile sets, palettes, room tables and sprites from the C64 sources
+    tools/sound.py        the C64 tunes and effects converted for the NES sound chip
     tools/play.py         runs the ROM in FCEUX without a window, with scripted input, room jumps,
                           screenshots and memory reads
 
@@ -67,4 +70,9 @@ copied into CHR-RAM when you go between indoors and outdoors.
   The NES shows at most 8 sprites on a line, so when the hero, the flame, an item and two enemies
   line up, the drawing order alternates every frame and they flicker instead of vanishing.
 - **The ending** is a message on the HUD for now; the C64's end screens come with the title screen.
+- **Sound:** the NES has two square-wave channels, a triangle and noise instead of the SID's three
+  voices with filters and envelopes. The bass lines play on the triangle, the melody and the
+  in-game drone on the second square, and the effects on the first square and the noise channel.
+  The SID's attack, decay and sustain become volume tables per frame. The C64 bell has no sustain,
+  so it only ticks there; on the NES it rings out.
 - **Controls:** fire is B, and jump is A as well as up.

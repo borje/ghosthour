@@ -1,4 +1,4 @@
-; Ghost Hour - NES port, milestone 3: the whole game without sound or title screen: 13 rooms,
+; Ghost Hour - NES port, milestone 4: the whole game with music and sound, no title screen yet: 13 rooms,
 ; candle lighting, ghosts, bats, wolves, candles, clock parts, Brooke and the clock.
 ; The game logic is a port of the C64 version (../src/main.asm), with speeds and timers
 ; rescaled from 50 Hz (PAL C64) to 60 Hz (NTSC NES).
@@ -261,6 +261,7 @@ row_lblo:  .repeat ROOM_ROWS, r
     ldx #16
     jsr copy_pages
 
+    jsr sound_init
     lda #$FF
     sta set_loaded
     lda #$A7
@@ -284,6 +285,8 @@ row_lblo:  .repeat ROOM_ROWS, r
     lda #START_Y
     sta py
     jsr enter_room
+    lda #SONG_GAME
+    jsr music_start
     lda #<msg_start
     ldx #>msg_start
     jsr show_message
@@ -329,6 +332,9 @@ row_lblo:  .repeat ROOM_ROWS, r
 .proc ending
     cmp #1
     beq win
+    lda #SFX_HIT            ; a last scream
+    jsr sfx_play
+    jsr music_stop
     lda #2                  ; the red flash of the last scare, then dark
     jsr idle_frames
     lda #0
@@ -342,6 +348,7 @@ row_lblo:  .repeat ROOM_ROWS, r
     jmp wait_start
 win:
     ; every light in the room comes on, and the bell tolls twelve times
+    jsr music_stop
     lda #$FF
     sta E_TYPE
     sta E_TYPE+1
@@ -361,6 +368,8 @@ win:
     lda #12
     sta count
 bell:
+    lda #SFX_BELL
+    jsr sfx_play
     lda #$30
     sta bgcol
     lda #2
@@ -474,6 +483,7 @@ novb:
     sta PPUMASK
 done:
     inc nmi_count
+    jsr sound_tick          ; music and effects keep time even while a room is drawn
     pla
     tay
     pla
@@ -1012,6 +1022,8 @@ nograb:
     sta vy+1
     lda #0
     sta grounded
+    lda #SFX_JUMP
+    jsr sfx_play
     jmp air2
 nojump:
     lda joy
@@ -1853,6 +1865,8 @@ waiting:
     ; strike! the next one in 5-15 seconds
     lda #7
     sta flash
+    lda #SFX_THUNDER
+    jsr sfx_play
     jsr random
     sta thunder_t
     and #1
@@ -2109,6 +2123,8 @@ out:
     sta hud_dirty
     lda #2
     sta red_flash
+    lda #SFX_HIT
+    jsr sfx_play
     lda #<msg_eek
     ldx #>msg_eek
     jmp show_message
@@ -2318,6 +2334,8 @@ hunt:
     bcc chase
     lda #72
     sta E_FLEE,x
+    lda #SFX_WAIL
+    jsr sfx_play
     jmp draw
 chase:
     lda E_T,x
@@ -2474,6 +2492,8 @@ wave:
     rol
     eor #1
     sta E_DIR,x
+    lda #SFX_WAIL
+    jsr sfx_play
 walk:
     ; walks at 1 px a frame; scared wolves run at 2
     lda E_T,x
@@ -2619,7 +2639,14 @@ lighting:
 :   inc rescue_t
     lda rescue_t
     cmp #RESCUE_TIME
-    bcc out
+    bcs saved
+    and #15
+    bne out
+    lda #SFX_CANDLE
+    jmp sfx_play
+saved:
+    lda #SFX_PART
+    jsr sfx_play
     lda #1
     sta rescued
     sta hud_dirty
@@ -2695,6 +2722,8 @@ batbite:
     sta hud_dirty
     lda #48
     sta E_FLEE,x
+    lda #SFX_HIT
+    jsr sfx_play
     stx tmp5
     lda #<msg_bat
     ldx #>msg_bat
@@ -2749,6 +2778,8 @@ pos:
     lda #$FF
     sta item_type
     sta hud_dirty
+    lda #SFX_PART
+    jsr sfx_play
     lda #<msg_part
     ldx #>msg_part
     jmp show_message
@@ -2764,7 +2795,9 @@ candle:
     beq :+
     lda #1
     sta ITEM_GONE,x
-:   lda #<msg_candle
+:   lda #SFX_CANDLE
+    jsr sfx_play
+    lda #<msg_candle
     ldx #>msg_candle
     jmp show_message
 out:
@@ -3120,6 +3153,8 @@ next:
     bne loop
     rts
 .endproc
+
+.include "sound.s"
 
 .segment "VECTORS"
     .addr nmi, reset, irq

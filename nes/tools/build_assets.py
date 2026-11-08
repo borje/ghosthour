@@ -11,6 +11,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(1, os.path.join(HERE, "..", "..", "tools"))
 import font, palette, rooms, sprites, tiles  # noqa: E402  (C64 sources)
 import layouts  # noqa: E402
+import sound  # noqa: E402
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "build"
 
@@ -331,6 +332,9 @@ MESSAGES = dict(txt_wax="WAX:", txt_nerve="NERVE:", txt_clock="CLOCK:",
 for label, text in MESSAGES.items():
     assert len(text) <= 28, text
     data.append(ca65_bytes(label, encode(text) + [0]))
+snd_const, snd_data = sound.asm()
+const.append(snd_const)
+data.append(snd_data)
 with open(os.path.join(OUT, "gen_const.inc"), "w") as f:
     f.write("".join(const))
 with open(os.path.join(OUT, "gen_data.inc"), "w") as f:

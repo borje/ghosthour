@@ -12,7 +12,7 @@ $(GEN) &: $(PY_SRC)
 	$(TOOLS) python tools/check_map.py
 	$(TOOLS) python tools/build_assets.py build
 
-build/main.o: src/main.s $(GEN)
+build/main.o: src/main.s src/sound.s $(GEN)
 	$(TOOLS) ca65 -I build --bin-include-dir build -g -o $@ src/main.s
 
 $(ROM): build/main.o src/unrom.cfg
